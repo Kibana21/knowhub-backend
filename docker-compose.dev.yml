@@ -1,0 +1,78 @@
+# KnowHub backend — reproducible container-based dependency environment.
+#
+# This is the clean-room path (M00-SPEC-004 R1.1): CI uses it, onboarding uses
+# it when a dependency is absent, and the M00 acceptance criteria are verified
+# against it. It is NOT the mandatory development path — a developer may point
+# KnowHub configuration at an existing instance of any service here and start
+# only what they lack (R1.2).
+#
+# Ports are deliberately non-default so this stack never collides with a
+# PostgreSQL on 5432 or a Redis on 6379 that the machine already runs.
+#
+# Every image is pinned by tag AND index digest (R4). Digests are the
+# multi-architecture manifest-list digests, so the pin resolves correctly on
+# both arm64 and amd64.
+#
+# Health checks here are service-native: each runs inside its own container
+# and reads no KnowHub setting. Verification that reads a *configured*
+# endpoint belongs to T02b, which consumes knowhub.config.
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg15@sha256:a947c45cdc5906a1bc951f20a8709e321256343ee0f251e4ae00b5e7def4e6da
+    environment:
+      # Local, non-production values. Not usable against any deployed
+      # environment (M00-SPEC-004 R8).
+      POSTGRES_USER: knowhub
+      POSTGRES_PASSWORD: knowhub_local_dev_only
+      POSTGRES_DB: knowhub
+    ports:
+      - "55432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U knowhub -d knowhub"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
+  redis:
+    image: redis:7.4-alpine@sha256:ff02b58f971e7d7d156a1267e283fcbbeee91773b6aa36c49dac28ecfe28eadf
+    ports:
+      - "56379:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      # Redis-level PING/PONG, not a socket probe: asserts the server answers
+      # the protocol, not merely that something is listening.
+      test: ["CMD-SHELL", "redis-cli ping | grep -q PONG"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 5s
+
+  azurite:
+    image: mcr.microsoft.com/azure-storage/azurite:3.37.0@sha256:830430c1da1a2d537e08f3e6764dd1f5ae00cf0346bcaf625b968ec3f0971fd5
+    command: azurite --blobHost 0.0.0.0 --queueHost 0.0.0.0 --tableHost 0.0.0.0 -l /data
+    ports:
+      - "10000:10000"
+      - "10001:10001"
+      - "10002:10002"
+    volumes:
+      - azurite-data:/data
+    healthcheck:
+      # HTTP-level probe: asserts the blob endpoint returns an HTTP response.
+      # Any status line proves the HTTP server is serving; an unauthenticated
+      # request legitimately returns 4xx, so the status code itself is not the
+      # signal. wget is present in this image; curl is not.
+      test: ["CMD-SHELL", "wget -q -S -O /dev/null http://127.0.0.1:10000/ 2>&1 | grep -q 'HTTP/'"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 5s
+
+volumes:
+  postgres-data:
+  redis-data:
+  azurite-data:

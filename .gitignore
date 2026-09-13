@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+
+# Environments
+.venv/
+venv/
+
+# Local configuration — never commit real values.
+# .env.example is the committed, placeholder-only template.
+.env
+.env.*
+!.env.example
+
+# Tooling output
+.coverage
+htmlcov/
+dist/
+build/
+
+# OS
+.DS_Store

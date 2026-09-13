@@ -1,0 +1,112 @@
+[project]
+name = "knowhub-backend"
+version = "0.0.0"
+description = "KnowHub backend — enterprise application knowledge and software-intelligence platform."
+readme = "README.md"
+requires-python = ">=3.12"
+
+# M00 runtime dependency baseline.
+# Defined once for the milestone by the approved implementation plan (§3.9);
+# later M00 tasks consume these rather than amending this manifest.
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "pydantic>=2.9",
+    "pydantic-settings>=2.6",
+    "opentelemetry-api>=1.28",
+    "opentelemetry-sdk>=1.28",
+    "opentelemetry-exporter-otlp-proto-http>=1.28",
+    "opentelemetry-instrumentation-fastapi>=0.49b0",
+    "alembic>=1.14",
+    "psycopg[binary]>=3.2",
+]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.8",
+    "pyright>=1.1.390",
+    "import-linter>=2.1",
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "httpx>=0.28",
+    "pip-audit>=2.7",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/knowhub"]
+
+# --------------------------------------------------------------------------
+# Ruff — lint and format (M00-SPEC-001 R17, R19; plan §3.4)
+# --------------------------------------------------------------------------
+[tool.ruff]
+target-version = "py312"
+line-length = 88
+src = ["src", "tests"]
+# Ruff >= 0.16 also formats Markdown (it reformats embedded Python blocks).
+# The canonical ADRs under docs/adr/ are governed by ADR-026 and must not be
+# rewritten by the backend source formatter. Backend-owned documentation —
+# README.md, docs/api/ — stays in scope deliberately. No Python source is
+# excluded and no gate is weakened.
+extend-exclude = ["docs/adr/**"]
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "F",    # pyflakes
+    "I",    # isort
+    "N",    # pep8-naming
+    "UP",   # pyupgrade
+    "B",    # flake8-bugbear
+    "A",    # flake8-builtins
+    "C4",   # flake8-comprehensions
+    "SIM",  # flake8-simplify
+    "RUF",  # ruff-specific
+    "PT",   # flake8-pytest-style
+    "S",    # flake8-bandit
+    "TID",  # flake8-tidy-imports
+    "ANN",  # flake8-annotations — KnowHub-owned code is annotated
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests assert, and their helpers do not need full annotation coverage.
+"tests/**" = ["S101", "ANN"]
+# Generated migration revisions are not hand-authored KnowHub code.
+"migrations/versions/*" = ["ANN", "E501", "INP001"]
+
+[tool.ruff.lint.flake8-tidy-imports]
+ban-relative-imports = "all"
+
+# --------------------------------------------------------------------------
+# Pyright — static type checking (M00-SPEC-001 R18, R19; plan §3.4)
+#
+# "standard" rather than "strict": strict enables the unknown-type family,
+# which fires across untyped third-party framework surfaces and would force
+# semantically empty annotations. R19 forbids that. Annotation *presence* on
+# KnowHub-owned code is enforced by Ruff ANN above; Pyright enforces
+# correctness.
+# --------------------------------------------------------------------------
+[tool.pyright]
+pythonVersion = "3.12"
+typeCheckingMode = "standard"
+include = ["src", "tests"]
+reportMissingTypeStubs = "error"
+reportUntypedFunctionDecorator = "error"
+reportIncompatibleMethodOverride = "error"
+reportUnnecessaryTypeIgnoreComment = "error"
+reportUnknownMemberType = false
+reportUnknownArgumentType = false
+
+# --------------------------------------------------------------------------
+# pytest (plan §3.7)
+# --------------------------------------------------------------------------
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--strict-markers"
+markers = [
+    "integration: requires a configured external dependency service",
+]
