@@ -40,10 +40,12 @@ from typing import Annotated, Any
 from pydantic import (
     BaseModel,
     Field,
+    JsonValue,
     SecretStr,
     ValidationError,
     model_validator,
 )
+from pydantic.config import JsonDict
 from pydantic_settings import (
     BaseSettings,
     PydanticBaseSettingsSource,
@@ -182,10 +184,11 @@ class TelemetrySettings(_Section):
 MANDATORY_FLOOR_KEY = "knowhub_mandatory_floor"
 
 
-def mandatory_floor(floor: object) -> dict[str, object]:
+def mandatory_floor(floor: JsonValue) -> JsonDict:
     """Declare a mandatory floor for a field.
 
-    Pass the result as ``json_schema_extra``. Strictness is ordered by the
+    Pass the result as ``json_schema_extra``; the return type matches what
+    pydantic accepts there. Strictness is ordered by the
     field's own comparison: a stricter value compares greater than or equal to
     the floor, so ``True`` is stricter than ``False`` and a larger minimum is
     stricter than a smaller one.

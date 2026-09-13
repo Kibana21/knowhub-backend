@@ -1,0 +1,264 @@
+# KnowHub backend CI.
+#
+# Every gate that M00 established manually runs here, and every one of them
+# blocks. Jobs are named by outcome, so a later move to another CI platform is
+# a translation rather than a redesign.
+#
+# This workflow must run to completion with only `knowhub-backend` cloned:
+# nothing here references `knowhub-frontend`, and nothing reaches a developer
+# workstation. Dependency services come from the repository's own Compose
+# definition on the ephemeral runner.
+#
+# Every action is pinned by commit SHA; every container image by digest.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # The tested runtime. `.python-version` pins the exact patch for local work;
+  # this is the CI baseline (M00-SPEC-001 R3).
+  PYTHON_VERSION: "3.12"
+  # Synthetic, CI-only values for the clean-room services. These match
+  # docker-compose.dev.yml and are not credentials for anything that exists.
+  KNOWHUB_DATABASE__HOST: "127.0.0.1"
+  KNOWHUB_DATABASE__PORT: "55432"
+  KNOWHUB_DATABASE__NAME: "knowhub"
+  KNOWHUB_DATABASE__USER: "knowhub"
+  KNOWHUB_DATABASE__PASSWORD_REF: "env:KH_CI_DB_PASSWORD"
+  KH_CI_DB_PASSWORD: "knowhub_local_dev_only"
+  KNOWHUB_REDIS__PORT: "56379"
+  KNOWHUB_TELEMETRY__EXPORTER: "none"
+
+jobs:
+  # ------------------------------------------------------------------------
+  # quality — lint, format, types, package boundaries.
+  # ------------------------------------------------------------------------
+  quality:
+    name: quality
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          enable-cache: true
+
+      # A distinct gate. `uv sync --frozen` installs from the lock without
+      # checking whether it still matches the manifest, so a stale lock would
+      # pass silently if this step did not exist.
+      - name: Lockfile is current
+        run: uv lock --check
+
+      - name: Install from the lockfile
+        run: uv sync --frozen
+
+      # Configuration lives in pyproject.toml and is never duplicated here.
+      - name: Lint
+        run: uv run ruff check .
+
+      - name: Format
+        run: uv run ruff format --check .
+
+      - name: Types
+        run: uv run pyright
+
+      - name: Package boundaries
+        run: uv run lint-imports
+
+  # ------------------------------------------------------------------------
+  # unit — the committed unit suite, with proof it actually ran.
+  # ------------------------------------------------------------------------
+  unit:
+    name: unit tests
+    runs-on: ubuntu-latest
+    needs: quality
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          enable-cache: true
+
+      - name: Lockfile is current
+        run: uv lock --check
+
+      - name: Install from the lockfile
+        run: uv sync --frozen
+
+      - name: Run unit tests
+        run: uv run pytest tests/unit -m "not integration" --junitxml=unit-results.xml
+
+      # A green pytest run proves nothing if it selected nothing.
+      - name: Assert unit tests actually executed
+        run: uv run python scripts/assert_test_run.py unit-results.xml --min-tests 1
+
+  # ------------------------------------------------------------------------
+  # integration — the real dependency services, and proof the suite did not
+  # quietly skip.
+  # ------------------------------------------------------------------------
+  integration:
+    name: integration tests
+    runs-on: ubuntu-latest
+    needs: unit
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          enable-cache: true
+
+      - name: Lockfile is current
+        run: uv lock --check
+
+      - name: Install from the lockfile
+        run: uv sync --frozen
+
+      # The repository's own clean-room definition, on the ephemeral runner.
+      # Redis and Azurite are started because they are part of the dependency
+      # set and must be observably healthy; M00 has no client for either, so
+      # neither has an integration test.
+      - name: Start dependency services
+        run: docker compose -f docker-compose.dev.yml up -d --wait
+
+      - name: Verify configured endpoints are available
+        run: uv run python scripts/check_dependencies.py
+
+      - name: Run integration tests
+        run: uv run pytest tests/integration -m integration --junitxml=integration-results.xml
+
+      # The integration suite skips when PostgreSQL or configuration is
+      # absent. "8 skipped" is not success: this asserts the expected
+      # selection ran, and that nothing in it was skipped.
+      - name: Assert integration tests executed and none skipped
+        run: uv run python scripts/assert_test_run.py integration-results.xml --min-tests 8 --no-skips
+
+      - name: Stop dependency services
+        if: always()
+        run: docker compose -f docker-compose.dev.yml down -v
+
+  # ------------------------------------------------------------------------
+  # security — dependency vulnerabilities and committed secrets.
+  # ------------------------------------------------------------------------
+  security:
+    name: security
+    runs-on: ubuntu-latest
+    needs: integration
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Full history: a credential removed in a later commit is still a
+          # leaked credential.
+          fetch-depth: 0
+
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          enable-cache: true
+
+      - name: Lockfile is current
+        run: uv lock --check
+
+      - name: Install from the lockfile
+        run: uv sync --frozen
+
+      # The export is already fully pinned and hashed by uv, so no resolution
+      # is needed or wanted: --no-deps audits exactly what the lock installs.
+      - name: Export the locked dependency set
+        run: uv export --format requirements-txt --no-emit-project -o ci-requirements.txt
+
+      - name: Dependency vulnerability scan
+        run: >-
+          uv run pip-audit --strict --no-deps --disable-pip
+          --require-hashes --requirement ci-requirements.txt
+
+      # No allowlist is configured. The repository's Compose file carries a
+      # local-development sentinel password, and gitleaks' ruleset does not
+      # flag it, so nothing needs narrowing. If a future ruleset does flag it,
+      # narrow to that exact value in that exact file — never the file
+      # broadly, and never a generic password pattern.
+      # `dir` and `git` take the path positionally; --redact keeps any finding
+      # out of the log. Both exit 1 on a finding, which fails the job.
+      - name: Secret scan (working tree)
+        run: >-
+          docker run --rm -v "${{ github.workspace }}:/repo:ro" -w /repo
+          zricethezav/gitleaks@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f
+          dir --redact .
+
+      - name: Secret scan (git history)
+        run: >-
+          docker run --rm -v "${{ github.workspace }}:/repo:ro" -w /repo
+          zricethezav/gitleaks@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f
+          git --redact .
+
+  # ------------------------------------------------------------------------
+  # image — the production image builds, boots and serves.
+  # ------------------------------------------------------------------------
+  image:
+    name: container image
+    runs-on: ubuntu-latest
+    needs: security
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # The repository Dockerfile is the single definition of the image.
+      # Nothing about how it is built is restated here.
+      - name: Build the image
+        run: docker build -t knowhub-backend:ci .
+
+      - name: Start the image in api mode
+        run: |
+          docker run -d --name knowhub-ci -p 8000:8000 \
+            -e KNOWHUB_DATABASE__PASSWORD_REF=env:KH_CI_DB_PASSWORD \
+            -e KH_CI_DB_PASSWORD="$KH_CI_DB_PASSWORD" \
+            -e KNOWHUB_TELEMETRY__EXPORTER=none \
+            knowhub-backend:ci api
+          for _ in $(seq 1 60); do
+            curl -fsS http://127.0.0.1:8000/healthz >/dev/null 2>&1 && exit 0
+            sleep 1
+          done
+          echo "container did not become responsive" >&2
+          docker logs knowhub-ci >&2 || true
+          exit 1
+
+      - name: Runtime user is not root
+        run: |
+          uid="$(docker exec knowhub-ci id -u)"
+          echo "effective UID: $uid"
+          test "$uid" -ne 0
+
+      - name: Liveness probe returns 200
+        run: |
+          code="$(curl -sS -o /dev/null -w '%{http_code}' http://127.0.0.1:8000/healthz)"
+          echo "healthz: $code"
+          test "$code" = "200"
+
+      - name: Readiness probe returns 200
+        run: |
+          code="$(curl -sS -o /dev/null -w '%{http_code}' http://127.0.0.1:8000/readyz)"
+          echo "readyz: $code"
+          test "$code" = "200"
+
+      - name: Unknown process mode is rejected
+        run: |
+          if docker run --rm knowhub-backend:ci worker; then
+            echo "unknown process mode was accepted" >&2
+            exit 1
+          fi
+
+      - name: Stop the container
+        if: always()
+        run: docker rm -f knowhub-ci || true

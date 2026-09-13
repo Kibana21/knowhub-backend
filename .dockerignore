@@ -1,18 +1,40 @@
+# Keep the build context to what the image actually needs. The Dockerfile
+# copies explicit paths, so this is defence in depth against an accidental
+# `COPY . .` and it keeps the context small.
+
+# Source control and CI
 .git/
+.gitignore
 .github/
+
+# Environments and caches
 .venv/
 venv/
 __pycache__/
 *.py[cod]
 .pytest_cache/
 .ruff_cache/
+.mypy_cache/
 .coverage
 htmlcov/
 dist/
 build/
+*.egg-info/
+
+# Local configuration. `.env.example` is documentation and must never become
+# runtime configuration; a real `.env` must never enter an image at all.
+.env
+.env.*
+.env.example
+
+# Development-only material
 tests/
 docs/
 scripts/
-.env
-.env.*
+migrations/
+alembic.ini
+docker-compose.dev.yml
+deploy/
+
+# OS
 .DS_Store

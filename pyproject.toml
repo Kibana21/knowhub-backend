@@ -81,6 +81,14 @@ select = [
 [tool.ruff.lint.flake8-tidy-imports]
 ban-relative-imports = "all"
 
+# Defence in depth only. import-linter below is the gate; these catch a
+# forbidden import at lint time, before the dependency is even added.
+# Limited to families no package may import at M00.
+[tool.ruff.lint.flake8-tidy-imports.banned-api]
+"redis".msg = "No Redis client at M00. It arrives with the M2 functionality that uses Redis (M00-SPEC-004 R5)."
+"azure.storage.blob".msg = "No Blob client at M00. It arrives with the M2 Blob abstraction (M00-SPEC-004 R6)."
+"taskiq".msg = "Taskiq is M2 work (blueprint §81). No broker, worker or scheduler code at M00."
+
 # --------------------------------------------------------------------------
 # Pyright — static type checking (M00-SPEC-001 R18, R19; plan §3.4)
 #
@@ -100,6 +108,40 @@ reportIncompatibleMethodOverride = "error"
 reportUnnecessaryTypeIgnoreComment = "error"
 reportUnknownMemberType = false
 reportUnknownArgumentType = false
+
+# --------------------------------------------------------------------------
+# import-linter — package dependency boundaries (M00-SPEC-001 R12-R16)
+#
+# Automated enforcement is the requirement; the tool is replaceable. Contracts
+# may reference only modules that exist, so coverage is partial by design at
+# M00 and each milestone extends it as its packages arrive (R16).
+# --------------------------------------------------------------------------
+[tool.importlinter]
+root_packages = ["knowhub"]
+# Required so the forbidden contracts below can name third-party packages.
+include_external_packages = true
+
+[[tool.importlinter.contracts]]
+name = "Dependency direction: api -> observability -> config"
+type = "layers"
+layers = ["knowhub.api", "knowhub.observability", "knowhub.config"]
+
+[[tool.importlinter.contracts]]
+name = "Configuration is framework-light"
+type = "forbidden"
+source_modules = ["knowhub.config"]
+# Settings must not need a web framework or the telemetry SDK to exist:
+# configuration loads before observability is initialised.
+forbidden_modules = ["fastapi", "starlette", "opentelemetry"]
+
+[[tool.importlinter.contracts]]
+name = "Observability is reusable outside the web layer"
+type = "forbidden"
+source_modules = ["knowhub.observability"]
+# Load-bearing: it keeps the correlation context importable by a future
+# worker process, and forces the ASGI middleware to live in knowhub.api.
+# knowhub.api may import both freely - it is the web layer.
+forbidden_modules = ["fastapi", "starlette"]
 
 # --------------------------------------------------------------------------
 # pytest (plan §3.7)
